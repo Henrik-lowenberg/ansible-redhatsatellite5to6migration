@@ -1,0 +1,173 @@
+---
+# This is for testing purpose only as of now, beta version
+# in final version you need to change hosts to an inventory file
+# and use ssh connection instead
+# Note! This is untested and should not be used for now!
+# Last update 2020-12-27
+# By Henrik Lowenberg
+#
+- hosts: localhost
+  connection: local
+  become: yes
+  become_method: sudo
+  gather_facts: yes
+
+tasks:
+ - name: Collect only facts about hardware
+   setup:
+     gather_subset:
+       - 'hardware'
+- name: Satellite block
+  block:
+    - name: Test for available disk space
+      setup: filter=ansible_mounts
+
+    min_varsize_gb: 1
+    - name: Verify disk space in /var (if it exists)
+      fail: msg="The available space on the /var partition is {{ (item.size_available|int / const_bytes_in_gb|int)|round(1) }} GB, but it should be at least {{ min_varsize_gb }} GB."
+      with_items: "{{ ansible_mounts }}"
+      when: "'/var' == '{{ item.mount }}'"
+      failed_when: "{{ min_varsize_gb|int * const_bytes_in_gb|int }} >= {{ item.size_available|int }}"
+      changed_when: True
+
+    - name: get application/database name
+      lineinfile:
+        path: /var/log/puppet_configgroups.txt
+        line: "ADDON*"
+        state: present
+        check_mode: yes
+        register: addon.split('=')[1]
+
+    - debug:
+      var: addon
+      verbosity: 2   
+
+      - name: download bootstrap script
+      get_url:
+        url: https://sat6host.example.com/pub/bootstrap.py
+        dest: /tmp/bootstrap.py
+
+      - name: make bootstrap file executable
+        file:
+          path: /tmp/bootstrap.py
+          state: file
+          mode: '0700'
+
+      - name: run bootstrap script for base RHEL OS
+         shell: /tmp/bootstrap.py -l sat6user -p somepwd -s sat6host.example.com --fqdn {{ ansible_hostname }} -o MYORG -L myloc -g rhel7_1m/myloc -a ak-auto,ak-rhel7_1m --skip puppet --skip katello-host-tools
+         when: addon is not defined
+
+       - name: run bootstrap script for RHEL OS with application/database
+         shell: /tmp/bootstrap.py -l sat6user -p somepwd -s sat6host.example.com --fqdn {{ ansible_hostname }} -o MYORG -L myloc -g rhel7_1m/myloc/{{ addon }} -a ak-auto,ak-rhel7_1m,ak-rhel7_1m_{{ addon }} --skip puppet --skip katello-host-tools
+         when: addon is defined
+     
+      - name: List subscribed channels
+        yum:
+          update_cache: yes
+          list: repos
+       register: subscribedchannels
+
+      - debug:
+         var: subscribedchannels
+         verbosity: 2
+
+
+- name: Puppet block
+  block:
+    - name: make backup of puppet.conf
+      copy:
+        src: /etc/puppet/puppet.conf
+        dest: /etc/puppet/puppet.conf.bak
+
+    - name: stop puppet service
+      service:
+        name: puppet
+        state: stopped      
+
+    - name: gather puppet cert files to delete
+        find:
+          paths: /var/lib/puppet/ssl
+          patterns: "*"
+        register: files_to_delete
+
+      - name: remove puppet cert files
+        file:
+          path: "{{ item.path }}"
+          state: absent
+        with_items: "{{ files_to_delete.files }}"
+
+    - name: create new puppet.conf
+        copy:
+          dest: /etc/puppet/puppet.conf
+          content; |
+          [main]
+        # The Puppet log directory.
+        # The default value is '/log'.
+        logdir = /var/log/puppet
+        # Where Puppet PID files are kept.
+        # The default value is '$vardir/run'.
+        rundir = /var/run/puppet
+        # Where SSL certificates are kept.
+        # The default value is '/ssl'.
+        ssldir = $vardir/ssl
+        use_srv_records = true
+        srv_domain = _puppet3masters.example.com
+        syslogfacility = local6
+    [agent]
+        # The file in which puppetd stores a list of the classes
+        # associated with the retrieved configuratiion.  Can be loaded in
+        # the separate puppet executable using the --loadclasses
+        # option.
+        # The default value is '$confdir/classes.txt'.
+        classfile = $vardir/classes.txt
+        # Where puppetd caches the local configuration.  An
+        # extension indicating the cache format is added automatically.
+        # The default value is '$confdir/localconfig'.
+        localconfig = $confdir/localconfig
+        pluginsource = puppet:///plugins
+        pluginfactsource = puppet:///pluginfacts
+        splay = true
+
+    - name: change permission on puppet.conf file
+      file:
+        path: /etc/puppet/puppet.conf
+        state: file
+        mode: '0644'
+        owner: root
+        group: root    
+
+    - name: create puppet autosign
+        copy:
+          dest: /etc/puppet/csr_attributes.yaml
+          content; |
+    ---
+    custom_attributes:
+      1.2.840.113549.1.9.7: PleaseAllowMeToIntroduceMyself
+
+    - name: change permission on csr_attributes file
+      file:
+           path: /etc/puppet/csr_attributes.yaml
+          state: file
+          mode: '0600'
+          owner: puppet
+          group: puppet
+
+    - name: run puppet with the new configuration
+        shell: /bin/puppet agent -t --onetime --tags no_such_tag --waitforcert 30 --no-daemonize
+        register: puppetagentoutput
+      failed_when: puppetagentoutput.rc != 2
+
+     - debug:
+         msg: puppetagentoutput.stderr
+
+    - name: Register file
+          stat:
+            path: "/var/lib/puppet/state/agent_disabled.lock"
+          register: lockfile
+
+       - name: start puppet service
+        service:
+          name: puppet
+          state: started
+          enabled: yes
+        when: puppetagentoutput.rc == 2 and lockfile.stat.exists == False     
