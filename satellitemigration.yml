@@ -8,7 +8,7 @@
 #
 - hosts: localhost
   connection: local
-  gather_facts: yes
+  gather_facts: true
 
   pre_tasks:
     - name: collect only facts about hardware
@@ -19,73 +19,85 @@
       setup: filter=ansible_mounts
 
   tasks:
-  - name: Satellite block
-    block:
-      - name: Ensure that free space on / is greater than 20%
-        assert:
-          that:
-            - item.size_available > item.size_total|float * 0.19
-          msg: ‘disk space has reached 70% threshold’
-        when: item.mount == "/"
-        with_items: "{{ ansible_mounts }}"
+    - name: Satellite block
+      block:
+        - name: Ensure that free space on / is greater than 20%
+          assert:
+            that:
+              - item.size_available > item.size_total|float * 0.19
+            msg: ‘disk space has reached 70% threshold’
+          when: item.mount == "/"
+          with_items: "{{ ansible_mounts }}"
 
-      - name: Slurp up content of cgroup file
-        slurp:
-          src: /var/log/puppet_configgroups.txt
-        register: cgroupfile
+        - name: Slurp up content of cgroup file
+          slurp:
+            src: /var/log/puppet_configgroups.txt
+          register: cgroupfile
 
-      - name: set addon fact based on content of local file
-        set_fact:
-          addon: "{{ cgroupfile['content'] | b64decode | regex_search('^ADDON=.*', multiline=True) | regex_replace('ADDON=') | regex_replace('\\d{2}') }}"
+        - name: set addon fact based on content of local file
+          set_fact:
+            addon: >-
+              "{{ cgroupfile['content'] | b64decode |
+              regex_search('^ADDON=.*', multiline=True) |
+              regex_replace('ADDON=') | regex_replace('\\d{2}') }}"
 
-      - debug:
-          var: addon
-          verbosity: 2
+        - debug:
+            var: addon
+            verbosity: 2
 
-      - name: download bootstrap script
-        get_url:
-          url: https://sat6.example.com/pub/bootstrap.py
-          dest: /tmp/bootstrap.py
+        - name: download bootstrap script
+          get_url:
+            url: https://sat6.example.com/pub/bootstrap.py
+            dest: /tmp/bootstrap.py
 
-      - name: make bootstrap file executable
-        file:
-          path: /tmp/bootstrap.py
-          state: file
-          mode: '0700'
+        - name: make bootstrap file executable
+          file:
+            path: /tmp/bootstrap.py
+            state: file
+            mode: '0700'
 
-      - name: run bootstrap script for base RHEL OS without addons
-        shell: /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove -s sat6.example.com --fqdn {{ ansible_hostname }} -o MYORG -L got -g rhel7_1m/site_customer -a ak-auto,ak-rhel7_1m_gss --skip puppet --skip katello-host-tools
-        when: addon is not defined
+        - name: run bootstrap script for base RHEL OS without addons
+          shell: >-
+            /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove
+             -s sat6.example.com --fqdn {{ ansible_hostname }}
+             -o MYORG -L got -g rhel7_1m/site_customer
+              -a ak-auto,ak-rhel7_1m_gss
+              --skip puppet --skip katello-host-tools
+          when: addon is not defined
 
-      - name: run bootstrap script for RHEL OS with addons
-        shell: /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove -s sat6.example.com --fqdn {{ ansible_hostname }} -o MYORG -L got -g rhel7_1m/site_customer/{{ addon }} -a ak-auto,ak-rhel7_1m_gss --skip puppet --skip katello-host-tools
-        when: addon is defined
+        - name: run bootstrap script for RHEL OS with addons
+          shell: >-
+            /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove
+             -s sat6.example.com --fqdn {{ ansible_hostname }}
+             -o MYORG -L got -g rhel7_1m/site_customer/{{ addon }}
+             -a ak-auto,ak-rhel7_1m_gss
+             --skip puppet --skip katello-host-tools
+          when: addon is defined
 
-      - name: List subscribed channels on new Satellite
-        yum:
-          update_cache: yes
-          list: repos
-       register: subscribedchannels
+        - name: List subscribed channels on new Satellite
+          yum:
+            update_cache: true
+            list: repos
+          register: subscribedchannels
 
-      - debug:
-         var: subscribedchannels
-         verbosity: 2
+        - debug:
+            var: subscribedchannels
+            verbosity: 2
 
 
+    - name: Puppet block
+      block:
+        - name: make backup of puppet.conf
+          copy:
+            src: /etc/puppet/puppet.conf
+            dest: /etc/puppet/puppet.conf.bak
 
-  - name: Puppet block
-    block:
-      - name: make backup of puppet.conf
-        copy:
-          src: /etc/puppet/puppet.conf
-          dest: /etc/puppet/puppet.conf.bak
+        - name: stop puppet service
+          service:
+            name: puppet
+            state: stopped
 
-      - name: stop puppet service
-        service:
-          name: puppet
-          state: stopped      
-
-      - name: gather puppet cert files to delete
+        - name: gather puppet cert files to delete
           find:
             paths: /var/lib/puppet/ssl
             patterns: "*"
@@ -97,78 +109,57 @@
             state: absent
           with_items: "{{ files_to_delete.files }}"
 
-      - name: create new puppet.conf
+        - name: create new puppet.conf
           copy:
             dest: /etc/puppet/puppet.conf
-            content; |
-            [main]
-          # The Puppet log directory.
-          # The default value is '/log'.
-          logdir = /var/log/puppet
-          # Where Puppet PID files are kept.
-          # The default value is '$vardir/run'.
-          rundir = /var/run/puppet
-          # Where SSL certificates are kept.
-          # The default value is '/ssl'.
-          ssldir = $vardir/ssl
-          use_srv_records = true
-          srv_domain = _puppet3masters.example.com
-          syslogfacility = local6
-      [agent]
-          # The file in which puppetd stores a list of the classes
-          # associated with the retrieved configuratiion.  Can be loaded in
-          # the separate puppet executable using the --loadclasses
-          # option.
-          # The default value is '$confdir/classes.txt'.
-          classfile = $vardir/classes.txt
-          # Where puppetd caches the local configuration.  An
-          # extension indicating the cache format is added automatically.
-          # The default value is '$confdir/localconfig'.
-          localconfig = $confdir/localconfig
-          pluginsource = puppet:///plugins
-          pluginfactsource = puppet:///pluginfacts
-          splay = true
+            owner: root
+            group: root
+            mode: '0644'
+            backup: true
+            content: |
+                [main]
+                logdir = /var/log/puppet
+                rundir = /var/run/puppet
+                ssldir = $vardir/ssl
+                use_srv_records = true
+                srv_domain = _puppet3masters.example.com
+                syslogfacility = local6
+                [agent]
+                classfile = $vardir/classes.txt
+                localconfig = $confdir/localconfig
+                pluginsource = puppet:///plugins
+                pluginfactsource = puppet:///pluginfacts
+                splay = true
 
-      - name: change permission on puppet.conf file
-        file:
-          path: /etc/puppet/puppet.conf
-          state: file
-          mode: '0644'
-          owner: root
-          group: root    
-
-      - name: create puppet autosign
+        - name: create puppet autosign
           copy:
             dest: /etc/puppet/csr_attributes.yaml
-            content; |
-      ---
-      custom_attributes:
-        1.2.840.113549.1.9.7: PleaseAllowMeToIntroduceMyself
-
-      - name: change permission on csr_attributes file
-        file:
-             path: /etc/puppet/csr_attributes.yaml
-            state: file
-            mode: '0600'
             owner: puppet
             group: puppet
+            mode: '0600'
+            content: |
+              ---
+              custom_attributes:
+                1.2.840.113549.1.9.7: PleaseAllowMeToIntroduceMyself
 
-      - name: run puppet with the new configuration
-          shell: /bin/puppet agent -t --onetime --tags no_such_tag --waitforcert 30 --no-daemonize
+        - name: run puppet with the new configuration
+          shell: >-
+            /bin/puppet agent -t --onetime --tags no_such_tag
+             --waitforcert 30 --no-daemonize
           register: puppetagentoutput
-        failed_when: puppetagentoutput.rc != 2
+          failed_when: puppetagentoutput.rc != 2
 
-       - debug:
-           msg: puppetagentoutput.stderr
+        - debug:
+            msg: puppetagentoutput.stderr
 
-      - name: Register file
-            stat:
-              path: "/var/lib/puppet/state/agent_disabled.lock"
-            register: lockfile
+        - name: Register file
+          stat:
+            path: "/var/lib/puppet/state/agent_disabled.lock"
+          register: lockfile
 
-         - name: start puppet service
+        - name: start puppet service
           service:
             name: puppet
             state: started
-            enabled: yes
-          when: puppetagentoutput.rc == 2 and lockfile.stat.exists == False     
+            enabled: true
+          when: puppetagentoutput.rc == 2 and lockfile.stat.exists == False
