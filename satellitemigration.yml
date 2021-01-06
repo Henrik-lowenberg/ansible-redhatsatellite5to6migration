@@ -87,11 +87,6 @@
 
     - name: Puppet block
       block:
-        - name: make backup of puppet.conf
-          copy:
-            src: /etc/puppet/puppet.conf
-            dest: /etc/puppet/puppet.conf.bak
-
         - name: stop puppet service
           service:
             name: puppet
