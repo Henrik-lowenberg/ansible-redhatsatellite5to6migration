@@ -41,6 +41,10 @@
               regex_search('^ADDON=.*', multiline=True) |
               regex_replace('ADDON=') | regex_replace('\\d{2}') | lower }}"
 
+        - name: create custom OS fact, e.g. rhel6, rhel7 etc...
+          set_fact:
+            myOSvers: "{{ ansible_distribution }}{{ ansible_distribution_major_version}}  |lower"    
+
         - debug:
             var: addon
             verbosity: 2
@@ -60,8 +64,8 @@
           shell: >-
             /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove
              -s sat6.example.com --fqdn {{ ansible_hostname }}
-             -o MYORG -L got -g rhel7_6m/site_customer
-              -a ak-auto,ak-rhel7_6m
+             -o MYORG -L got -g {{ myOSvers }}_6m/site_customer
+              -a ak-auto,ak-{{ myOSvers }}_6m
               --skip puppet --skip katello-host-tools
           when: addon is not defined
 
@@ -69,8 +73,8 @@
           shell: >-
             /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove
              -s sat6.example.com --fqdn {{ ansible_hostname }}
-             -o MYORG -L got -g rhel7_6m/site_customer/{{ addon }}
-             -a ak-auto,ak-rhel7_6m
+             -o MYORG -L got -g {{ myOSvers }}_6m/site_customer/{{ addon }}
+             -a ak-auto,ak-{{ myOSvers }}_6m
              --skip puppet --skip katello-host-tools
           when:
             - addon is defined
@@ -83,8 +87,8 @@
           shell: >-
            /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove
            -s sat6.example.com --fqdn {{ ansible_hostname }}
-           -o MYORG -L got -g rhel7_6m/site_customer/{{ addon }}
-           -a ak-auto,ak-rhel7_6m,ak-rhel7_6m_{{ addon }}
+           -o MYORG -L got -g {{ myOSvers }}_6m/site_customer/{{ addon }}
+           -a ak-auto,ak-{{ myOSvers }}_6m,ak-{{ myOSvers }}_6m_{{ addon }}
            --skip puppet --skip katello-host-tools
           when:
             - addon is defined
