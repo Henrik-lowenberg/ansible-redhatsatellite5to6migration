@@ -43,7 +43,10 @@
 
         - name: create custom OS fact, e.g. rhel6, rhel7 etc...
           set_fact:
-            myOSvers: "{{ ansible_distribution }}{{ ansible_distribution_major_version}}  |lower"    
+            myOSvers: >-
+              "{{ ansible_distribution }}
+              {{ ansible_distribution_major_version}}|
+              lower"
 
         - debug:
             var: addon
