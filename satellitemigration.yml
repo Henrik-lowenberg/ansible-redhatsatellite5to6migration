@@ -3,7 +3,7 @@
 # in final version you need to change hosts to an inventory file
 # and use ssh connection instead
 # Note! This is untested and should not be used for now!
-# Last update 2021-01-06
+# Last update 2021-01-07
 # By Henrik Lowenberg
 #
 - hosts: localhost
@@ -21,25 +21,25 @@
   tasks:
     - name: Satellite block
       block:
-        - name: Ensure that free space on / is greater than 20%
+        - name: Ensure > 10% free space on /var
           assert:
             that:
-              - item.size_available > item.size_total|float * 0.19
-            msg: ‘disk space has reached 70% threshold’
-          when: item.mount == "/"
+              - item.size_available > item.size_total|float * 0.09
+            msg: ‘disk space has reached 90% threshold’
+          when: item.mount == "/var"
           with_items: "{{ ansible_mounts }}"
 
-        - name: Slurp up content of cgroup file
+        - name: Slurp up content of file containing host app/db from puppet
           slurp:
             src: /var/log/puppet_configgroups.txt
           register: cgroupfile
 
-        - name: set addon fact based on content of local file
+        - name: create a custom addon fact based on content of local file
           set_fact:
             addon: >-
               "{{ cgroupfile['content'] | b64decode |
               regex_search('^ADDON=.*', multiline=True) |
-              regex_replace('ADDON=') | regex_replace('\\d{2}') }}"
+              regex_replace('ADDON=') | regex_replace('\\d{2}') | lower }}"
 
         - debug:
             var: addon
@@ -56,23 +56,44 @@
             state: file
             mode: '0700'
 
-        - name: run bootstrap script for base RHEL OS without addons
+        - name: run bootstrap script, RHEL OS, no addon
           shell: >-
             /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove
              -s sat6.example.com --fqdn {{ ansible_hostname }}
-             -o MYORG -L got -g rhel7_1m/site_customer
-              -a ak-auto,ak-rhel7_1m_gss
+             -o MYORG -L got -g rhel7_6m/site_customer
+              -a ak-auto,ak-rhel7_6m
               --skip puppet --skip katello-host-tools
           when: addon is not defined
 
-        - name: run bootstrap script for RHEL OS with addons
+        - name: run bootstrap script, RHEL OS, addon hostgroup, no activationkey
           shell: >-
             /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove
              -s sat6.example.com --fqdn {{ ansible_hostname }}
-             -o MYORG -L got -g rhel7_1m/site_customer/{{ addon }}
-             -a ak-auto,ak-rhel7_1m_gss
+             -o MYORG -L got -g rhel7_6m/site_customer/{{ addon }}
+             -a ak-auto,ak-rhel7_6m
              --skip puppet --skip katello-host-tools
-          when: addon is defined
+          when:
+            - addon is defined
+            - addon == "app1" or
+              addon == "db1" or
+              addon == "app2" or
+              addon == "app3"
+
+        - name: run bootstrap script, RHEL OS, addon hostgroup + activationkey
+          shell: >-
+           /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove
+           -s sat6.example.com --fqdn {{ ansible_hostname }}
+           -o MYORG -L got -g rhel7_6m/site_customer/{{ addon }}
+           -a ak-auto,ak-rhel7_6m,ak-rhel7_6m_{{ addon }}
+           --skip puppet --skip katello-host-tools
+          when:
+            - addon is defined
+            - addon == "app4" or
+             addon == "app5" or
+             addon == "db2" or
+             addon == "app6" or
+             addon == "app7" or
+             addon == "app8"
 
         - name: List subscribed channels on new Satellite
           yum:
@@ -104,7 +125,7 @@
             state: absent
           with_items: "{{ files_to_delete.files }}"
 
-        - name: create new puppet.conf
+        - name: create new puppet.conf, backup the old one
           copy:
             dest: /etc/puppet/puppet.conf
             owner: root
@@ -117,7 +138,7 @@
                 rundir = /var/run/puppet
                 ssldir = $vardir/ssl
                 use_srv_records = true
-                srv_domain = _puppet3masters.example.com
+                srv_domain = _puppet5masters.example.com
                 syslogfacility = local6
                 [agent]
                 classfile = $vardir/classes.txt
@@ -137,7 +158,7 @@
               custom_attributes:
                 1.2.840.113549.1.9.7: PleaseAllowMeToIntroduceMyself
 
-        - name: run puppet with the new configuration
+        - name: run puppet once with the new configuration
           shell: >-
             /bin/puppet agent -t --onetime --tags no_such_tag
              --waitforcert 30 --no-daemonize
@@ -147,12 +168,12 @@
         - debug:
             msg: puppetagentoutput.stderr
 
-        - name: Register file
+        - name: Check for puppet agent_disabled file
           stat:
             path: "/var/lib/puppet/state/agent_disabled.lock"
           register: lockfile
 
-        - name: start puppet service
+        - name: start and enable the puppet service
           service:
             name: puppet
             state: started
