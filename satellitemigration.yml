@@ -96,11 +96,11 @@
           when:
             - addon is defined
             - addon == "app4" or
-             addon == "app5" or
-             addon == "db2" or
-             addon == "app6" or
-             addon == "app7" or
-             addon == "app8"
+              addon == "app5" or
+              addon == "db2" or
+              addon == "app6" or
+              addon == "app7" or
+              addon == "app8"
 
         - name: List subscribed channels on new Satellite
           yum:
