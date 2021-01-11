@@ -2,8 +2,7 @@
 # This is for testing purpose only as of now, beta version
 # in final version you need to change hosts to an inventory file
 # and use ssh connection instead
-# Note! This is untested and should not be used for now!
-# Last update 2021-01-07
+# Last update 2021-01-11
 # By Henrik Lowenberg
 #
 - hosts: localhost
@@ -45,8 +44,7 @@
           set_fact:
             myOSvers: >-
               "{{ ansible_distribution }}
-              {{ ansible_distribution_major_version}}|
-              lower"
+              {{ ansible_distribution_major_version}}|lower"
 
         - debug:
             var: addon
@@ -56,28 +54,24 @@
           get_url:
             url: https://sat6.example.com/pub/bootstrap.py
             dest: /tmp/bootstrap.py
-
-        - name: make bootstrap file executable
-          file:
-            path: /tmp/bootstrap.py
-            state: file
             mode: '0700'
+            validate_certs: no
 
         - name: run bootstrap script, RHEL OS, no addon
           shell: >-
-            /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove
-             -s sat6.example.com --fqdn {{ ansible_hostname }}
-             -o MYORG -L got -g {{ myOSvers }}_6m/site_customer
-              -a ak-auto,ak-{{ myOSvers }}_6m
+            /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove \
+             -s sat6.example.com --fqdn {{ ansible_fqdn }} \
+             -o MYORG -L got -g {{ myOSvers }}_6m/site_customer \
+              -a ak-auto,ak-{{ myOSvers }}_6m \
               --skip puppet --skip katello-host-tools
-          when: addon is not defined
+          when: addon is not defined or addon == "\"none\""
 
         - name: run bootstrap script, RHEL OS, addon hostgroup, no activationkey
           shell: >-
-            /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove
-             -s sat6.example.com --fqdn {{ ansible_hostname }}
-             -o MYORG -L got -g {{ myOSvers }}_6m/site_customer/{{ addon }}
-             -a ak-auto,ak-{{ myOSvers }}_6m
+            /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove \
+             -s sat6.example.com --fqdn {{ ansible_fqdn }} \
+             -o MYORG -L got -g {{ myOSvers }}_6m/site_customer/{{ addon }} \
+             -a "ak-auto,ak-{{ myOSvers }}_6m" \
              --skip puppet --skip katello-host-tools
           when:
             - addon is defined
@@ -88,10 +82,10 @@
 
         - name: run bootstrap script, RHEL OS, addon hostgroup + activationkey
           shell: >-
-           /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove
-           -s sat6.example.com --fqdn {{ ansible_hostname }}
-           -o MYORG -L got -g {{ myOSvers }}_6m/site_customer/{{ addon }}
-           -a ak-auto,ak-{{ myOSvers }}_6m,ak-{{ myOSvers }}_6m_{{ addon }}
+           /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove \
+           -s sat6.example.com --fqdn {{ ansible_fqdn }} \
+           -o MYORG -L got -g {{ myOSvers }}_6m/site_customer/{{ addon }} \
+           -a "ak-auto,ak-{{ myOSvers }}_6m,ak-{{ myOSvers }}_6m_{{ addon }}" \
            --skip puppet --skip katello-host-tools
           when:
             - addon is defined
@@ -111,7 +105,12 @@
         - debug:
             var: subscribedchannels
             verbosity: 2
-
+      rescue:
+        - name: remove katello cert if bootstrap failed
+          yum:
+            name: katello-ca-consumer-sat6.example.com-1.0-1.noarch
+            state: absent
+      tags: satellite
 
     - name: Puppet block
       block:
@@ -120,17 +119,15 @@
             name: puppet
             state: stopped
 
-        - name: gather puppet cert files to delete
-          find:
-            paths: /var/lib/puppet/ssl
-            patterns: "*"
-          register: files_to_delete
+        - name: upgrade puppet package
+          yum:
+            name: puppet
+            state: latest
 
-        - name: remove puppet cert files
+         - name: remove puppet ssl directory
           file:
-            path: "{{ item.path }}"
+            path: /var/lib/puppet/ssl
             state: absent
-          with_items: "{{ files_to_delete.files }}"
 
         - name: create new puppet.conf, backup the old one
           copy:
@@ -145,7 +142,7 @@
                 rundir = /var/run/puppet
                 ssldir = $vardir/ssl
                 use_srv_records = true
-                srv_domain = _puppet5masters.example.com
+                srv_domain = _puppet3masters.example.com
                 syslogfacility = local6
                 [agent]
                 classfile = $vardir/classes.txt
@@ -167,13 +164,10 @@
 
         - name: run puppet once with the new configuration
           shell: >-
-            /bin/puppet agent -t --onetime --tags no_such_tag
+            /bin/puppet agent -t --onetime --tags no_such_tag \
              --waitforcert 30 --no-daemonize
           register: puppetagentoutput
-          failed_when: puppetagentoutput.rc != 2
-
-        - debug:
-            msg: puppetagentoutput.stderr
+          failed_when: puppetagentoutput.rc > 2
 
         - name: Check for puppet agent_disabled file
           stat:
@@ -185,4 +179,5 @@
             name: puppet
             state: started
             enabled: true
-          when: puppetagentoutput.rc == 2 and lockfile.stat.exists == False
+          when: puppetagentoutput.rc <= 2 and lockfile.stat.exists == False
+      tags: puppet          
