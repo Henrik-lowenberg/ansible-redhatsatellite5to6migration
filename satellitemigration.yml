@@ -65,7 +65,7 @@
             /var/log/puppet_configgroups.txt
           register: addon
 
-        - name: create custom OS fact, e.g. rhel6, rhel7 etc...
+        - name: create custom OS fact, for example RedHat6, RedHat7
           set_fact:
             myOSvers: >-
               "{{ ansible_distribution }}
