@@ -28,17 +28,11 @@
           when: item.mount == "/var"
           with_items: "{{ ansible_mounts }}"
 
-        - name: Slurp up content of file containing host app/db from puppet
-          slurp:
-            src: /var/log/puppet_configgroups.txt
-          register: cgroupfile
-
-        - name: create a custom addon fact based on content of local file
-          set_fact:
-            addon: >-
-              "{{ cgroupfile['content'] | b64decode |
-              regex_search('^ADDON=.*', multiline=True) |
-              regex_replace('ADDON=') | regex_replace('\\d{2}') | lower }}"
+        - name: extract installed add-on from file
+          shell: >-
+            /bin/awk -F= '/ADDON/{while(sub(/[0-9]/,"")){}print tolower($2)}' \
+            /var/log/puppet_configgroups.txt
+          register: addon
 
         - name: create custom OS fact, e.g. rhel6, rhel7 etc...
           set_fact:
@@ -64,37 +58,37 @@
              -o MYORG -L got -g {{ myOSvers }}_6m/site_customer \
               -a ak-auto,ak-{{ myOSvers }}_6m \
               --skip puppet --skip katello-host-tools
-          when: addon is not defined or addon == "\"none\""
+          when: addon.stdout is not defined
 
         - name: run bootstrap script, RHEL OS, addon hostgroup, no activationkey
           shell: >-
             /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove \
              -s sat6.example.com --fqdn {{ ansible_fqdn }} \
-             -o MYORG -L got -g {{ myOSvers }}_6m/site_customer/{{ addon }} \
-             -a "ak-auto,ak-{{ myOSvers }}_6m" \
+             -o MYORG -L got -g {{ myOSvers }}_6m/site_customer/{{ addon.stdout }} \
+             -a ak-auto,ak-{{ myOSvers }}_6m \
              --skip puppet --skip katello-host-tools
           when:
-            - addon is defined
-            - addon == "app1" or
-              addon == "db1" or
-              addon == "app2" or
-              addon == "app3"
+            - addon.stdout is defined
+            - addon.stdout is search("app1") or
+              addon.stdout is search("db1") or
+              addon.stdout is search("app2") or
+              addon.stdout is search("app3")
 
         - name: run bootstrap script, RHEL OS, addon hostgroup + activationkey
           shell: >-
            /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove \
            -s sat6.example.com --fqdn {{ ansible_fqdn }} \
-           -o MYORG -L got -g {{ myOSvers }}_6m/site_customer/{{ addon }} \
-           -a "ak-auto,ak-{{ myOSvers }}_6m,ak-{{ myOSvers }}_6m_{{ addon }}" \
+           -o MYORG -L got -g {{ myOSvers }}_6m/site_customer/{{ addon.stdout }} \
+           -a ak-auto,ak-{{ myOSvers }}_6m,ak-{{ myOSvers }}_6m_{{ addon.stdout }} \
            --skip puppet --skip katello-host-tools
           when:
-            - addon is defined
-            - addon == "app4" or
-              addon == "app5" or
-              addon == "db2" or
-              addon == "app6" or
-              addon == "app7" or
-              addon == "app8"
+            - addon.stdout is defined
+            - addon.stdout is search("app4") or
+              addon.stdout is search("app5") or
+              addon.stdout is search("db2") or
+              addon.stdout is search("app6") or
+              addon.stdout is search("app7") or
+              addon.stdout is search("app8")
 
         - name: List subscribed channels on new Satellite
           yum:
