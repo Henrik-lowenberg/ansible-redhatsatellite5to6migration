@@ -1,4 +1,20 @@
 ---
+# The intended purpose for this playbook is to migrate RHEL servers
+# from Red Hat Satellite 5 to Red Hat Satellite 6 and
+# from one stand-alone Puppet environment into another
+#
+# Some assumptions are made, like:
+# hostgroups and activation keys exists mostly for all apps/dbs
+# The target Puppet environment is the same version as the old one
+# otherwise you will need to remove the puppet rpm and dependencies
+# and install a new packages
+# Puppetlabs channels are configured in the target Satellite 6
+# Your target Satellite 6 has been configured to use ssh rex so no
+# katello-agent or goferd is used.
+# Red Hat Satellite Tools channels are not used
+# otherwise a conflict of Red Hat puppet packages and
+# Puppetlabs puppet packages will arise
+#
 # This is for testing purpose only as of now, beta version
 # Last update 2021-01-14
 # By Henrik Lowenberg
