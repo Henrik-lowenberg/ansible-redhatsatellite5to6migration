@@ -1,12 +1,27 @@
 ---
 # This is for testing purpose only as of now, beta version
-# in final version you need to change hosts to an inventory file
-# and use ssh connection instead
-# Last update 2021-01-11
+# Last update 2021-01-14
 # By Henrik Lowenberg
 #
-- hosts: localhost
-  connection: local
+# create a text file named inventoryfile
+# populate it with the batch of servers you wish to migrate
+#
+# running it without a NOPASSWD sudoers user
+# ansible-playbook satellite_5_to_6_migration.yml -i inventoryfile -e remote_user=yourid --ask-pass -vv
+#
+# If you are running it without overrides
+# ansible-playbook satellite_5_to_6_migration.yml -i inventoryfile -vv
+#
+# If the playbook fails and you want to rerun just the satellite part or the puppet part then use tags, 4 ex:
+# ansible-playbook satellite_5_to_6_migration.yml -i inventoryfile --tags=satellite -vv
+#
+# If you have some other way to discern what app/db is installed then replace the "extract installed add-on from file"
+# with another function get_url from a web server or cmdb query for example.
+
+- hosts: all
+  remote_user: ansibleremoteuser
+  become: yes
+  become_method: sudo
   gather_facts: true
 
   pre_tasks:
