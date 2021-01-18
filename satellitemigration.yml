@@ -71,9 +71,21 @@
               "{{ ansible_distribution }}
               {{ ansible_distribution_major_version}}|lower"
 
+        - name: Get hosts Satellite 5 subscribed channels
+          yum:
+            update_cache: true
+            list: repos
+          register: subscribedsat5channels
+
         - debug:
-            var: addon
+            msg: "System {{ inventory_hostname }} has add-on {{ addon }}"
             verbosity: 2
+          when: addon.stdout is defined
+
+        - debug:
+            var: subscribedsat5channels
+            verbosity: 2
+          when: subscribedsat5channels is defined
 
         - name: download bootstrap script
           get_url:
@@ -89,7 +101,7 @@
              -o MYORG -L got -g {{ myOSvers }}_6m/site_customer \
               -a ak-auto,ak-{{ myOSvers }}_6m \
               --skip puppet --skip katello-host-tools
-          when: addon.stdout is not defined
+          when: addon.stdout is not defined or addon.stdout|length == 0
 
         - name: run bootstrap script, RHEL OS, addon hostgroup, no activationkey
           shell: >-
@@ -121,15 +133,17 @@
               addon.stdout is search("app7") or
               addon.stdout is search("app8")
 
-        - name: List subscribed channels on new Satellite
+        - name: Get hosts Satellite 6 subscribed channels
           yum:
             update_cache: true
             list: repos
-          register: subscribedchannels
+          register: subscribedsat6channels
 
         - debug:
-            var: subscribedchannels
+            var: subscribedsat6channels
             verbosity: 2
+          when: subscribedsat6channels is defined
+
       rescue:
         - name: remove katello cert if bootstrap failed
           yum:
@@ -139,6 +153,17 @@
 
     - name: Puppet block
       block:
+         - name: get stat on puppet autosign file
+          stat:
+            path: /etc/puppet/csr_attributes.yaml
+          register: autosignfile
+
+        - name: assert that old puppet env is used
+          assert:
+            that: 
+            - autosignfile.stat.exists == False
+            msg:  ‘New Puppet env detected, aborting puppet block’
+            
         - name: stop puppet service
           service:
             name: puppet
