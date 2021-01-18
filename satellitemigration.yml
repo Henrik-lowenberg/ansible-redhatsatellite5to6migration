@@ -150,6 +150,12 @@
               addon.stdout is search("app7") or
               addon.stdout is search("app8")
 
+     - name: Enable additional rhel 7 channels
+          rhsm_repository:
+            name: "{{ item }}"
+            state: enabled
+          with_items: "{{ additional_repos }}"         
+          
         - name: Get hosts Satellite 6 subscribed channels
           yum:
             update_cache: true
