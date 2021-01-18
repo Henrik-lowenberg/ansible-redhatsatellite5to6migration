@@ -16,16 +16,16 @@
 # Puppetlabs puppet packages will arise
 #
 # This is for testing purpose only as of now, beta version
-# Last update 2021-01-14
+# Last update 2021-01-18
 # By Henrik Lowenberg
 #
 # create a text file named inventoryfile
 # populate it with the batch of servers you wish to migrate
 #
 # running it without a NOPASSWD sudoers user
-# ansible-playbook satellite_5_to_6_migration.yml -i inventoryfile -e remote_user=yourid --ask-pass -vv
+# ansible-playbook satellite_5_to_6_migration.yml -i inventoryfile --ask-pass -vv -b -K
 #
-# If you are running it without overrides
+# If you are running it without overrides (make sure you have ssh keys and sudoers configured with NOPASSWD)
 # ansible-playbook satellite_5_to_6_migration.yml -i inventoryfile -vv
 #
 # If the playbook fails and you want to rerun just the satellite part or the puppet part then use tags, 4 ex:
@@ -35,10 +35,16 @@
 # with another function get_url from a web server or cmdb query for example.
 
 - hosts: all
-  remote_user: ansibleremoteuser
   become: yes
   become_method: sudo
   gather_facts: true
+
+ vars:
+    additional_repos:
+      - rhel-{{ ansible_distribution_major_version}}-server-supplementary-rpms
+      - rhel-{{ ansible_distribution_major_version}}-server-rh-common-rpms
+      - rhel-{{ ansible_distribution_major_version}}-server-optional-rpms
+      - rhel-{{ ansible_distribution_major_version}}-server-extras-rpms
 
   pre_tasks:
     - name: collect only facts about hardware
@@ -51,13 +57,24 @@
   tasks:
     - name: Satellite block
       block:
-        - name: Ensure > 10% free space on /var
+        - name: Ensure > 5% free space on /var and /home
           assert:
             that:
-              - item.size_available > item.size_total|float * 0.09
-            msg: ‘disk space has reached 90% threshold’
-          when: item.mount == "/var"
+              - item.size_available > item.size_total|float * 0.05
+            msg: ‘Not enough space on {{ item.mount }}’’
+          when: item.mount == "/var" or item.mount == "/home"
           with_items: "{{ ansible_mounts }}"
+
+        - name: Check to which satellite this host is registered
+          shell: >-
+            subscription-manager identity|grep RHN|wc -l
+          register: satelliteidentitycheck
+
+        - name: Verify that this host is registered with Satellite 5
+          assert:
+            that:
+              - satelliteidentitycheck.stdout|int == 1
+            msg: 'This server not registered with RHN Satellite 5!Satellite block aborted'
 
         - name: extract installed add-on from file
           shell: >-
