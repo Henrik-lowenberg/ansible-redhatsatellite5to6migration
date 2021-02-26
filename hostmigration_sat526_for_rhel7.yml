@@ -3,11 +3,11 @@
 # in final version you need to change hosts to an inventory file
 # and use ssh connection instead
 # Version: beta
-# Last update 2021-01-14
+# Created: 2021-01-14
 # By Henrik Lowenberg
 #
 # Script assumptions:
- Only RHEL 6 servers are migrated
+# Only RHEL 6 servers are migrated
 # server is registered to Satellite 5
 #
 # puppet is configured to store a file in /var/log with host parameters
@@ -111,7 +111,7 @@
  
         - name: download bootstrap script
           get_url:
-            url: https://segotl4385.srv.volvo.com/pub/bootstrap.py
+            url: https://sat6host.example.com/pub/bootstrap.py
             dest: /tmp/
             mode: '0700'
             validate_certs: no
@@ -119,7 +119,7 @@
         - name: run bootstrap script, RHEL OS, no addon
           shell: >-
             /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove \
-             -s segotl3687.srv.volvo.com --fqdn {{ facter_fqdn }} \
+             -s capsule1.example.com --fqdn {{ facter_fqdn }} \
              -o HCL -L got -g rhel7_6m_gss/got_{{ customer.stdout }} \
               -a ak-auto,ak-rhel7_6m_gss \
               --skip puppet --skip katello-host-tools
@@ -128,38 +128,30 @@
         - name: run bootstrap script, RHEL OS, addon hostgroup, no activationkey
           shell: >-
             /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove \
-             -s segotl3687.srv.volvo.com --fqdn {{ facter_fqdn }} \
+             -s capsule1.example.com --fqdn {{ facter_fqdn }} \
              -o HCL -L got -g rhel7_6m_gss/got_{{ customer.stdout }}/{{ addon.stdout }} \
              -a ak-auto,ak-rhel7_6m_gss \
              --skip puppet --skip katello-host-tools
           when:
             - addon.stdout is defined
-            - addon.stdout is search("cassandra") or
-              addon.stdout is search("oracle") or
-              addon.stdout is search("tsmserv") or
-              addon.stdout is search("was") or
-              addon.stdout is search("vgcs") or
-              addon.stdout is search("vgcsoracle") or
-              addon.stdout is search("vgcspostgres") or
-              addon.stdout is search("vgt") or
-              addon.stdout is search("vgtoracle") or
-              addon.stdout is search("vgtpostgres")
+               - addon.stdout is search("app1") or
+              addon.stdout is search("db1") or
+              addon.stdout is search("app2") or
+              addon.stdout is search("app3")
  
         - name: run bootstrap script, RHEL OS, addon hostgroup + activationkey
           shell: >-
             /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove \
-             -s segotl3687.srv.volvo.com --fqdn {{ facter_fqdn }} \
+             -s capsule1.example.com --fqdn {{ facter_fqdn }} \
              -o HCL -L got -g rhel7_6m_gss/got_{{ customer.stdout }}/{{ addon.stdout }} \
              -a ak-auto,ak-rhel7_6m_gss,ak-rhel7_6m_gss_{{ addon.stdout }} \
              --skip puppet --skip katello-host-tools
           when:
             - addon.stdout is defined
-            - addon.stdout is search("postgres") or
-              addon.stdout is search("sapapp") or
-              addon.stdout is search("sapdb2") or
-              addon.stdout is search("jboss") or
-              addon.stdout is search("jbosszip") or
-              addon.stdout is search("wlp")
+               - addon.stdout is search("app1") or
+              addon.stdout is search("db1") or
+              addon.stdout is search("app2") or
+              addon.stdout is search("app3")
  
         - name: Enable additional rhel 7 channels
           rhsm_repository:
@@ -181,7 +173,7 @@
       rescue:
         - name: remove katello cert if bootstrap failed
           yum:
-            name: katello-ca-consumer-segotl3687.srv.volvo.com-1.0-1.noarch
+            name: katello-ca-consumer-capsule1.example.com-1.0-1.noarch
             state: absent
       tags: satellite
  
@@ -239,7 +231,7 @@
                 rundir = /var/run/puppet
                 ssldir = $vardir/ssl
                 use_srv_records = true
-                srv_domain = _puppet3masters.srv.volvo.com
+                srv_domain = _puppet3masters.example.com
                 syslogfacility = local6
                 [agent]
                 classfile = $vardir/classes.txt
