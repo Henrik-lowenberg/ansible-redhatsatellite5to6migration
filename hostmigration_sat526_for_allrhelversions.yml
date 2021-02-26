@@ -1,0 +1,259 @@
+---
+# The intended purpose for this playbook is to migrate RHEL servers
+# from Red Hat Satellite 5 to Red Hat Satellite 6 and
+# from one stand-alone Puppet environment into another
+#
+# Some assumptions are made, like:
+# hostgroups and activation keys exists mostly for all apps/dbs
+# The target Puppet environment is the same version as the old one
+# otherwise you will need to remove the puppet rpm and dependencies
+# and install a new packages
+# Puppetlabs channels are configured in the target Satellite 6
+# Your target Satellite 6 has been configured to use ssh rex so no
+# katello-agent or goferd is used.
+# Red Hat Satellite Tools channels are not used
+# otherwise a conflict of Red Hat puppet packages and
+# Puppetlabs puppet packages will arise
+#
+# This is for testing purpose only as of now, beta version
+# Last update 2021-01-18
+# By Henrik Lowenberg
+#
+# puppet is configured to store a file in /var/log with host parameters
+# installed application/database are referred to as ADDON
+#
+# create a text file named inventoryfile
+# populate it with the batch of servers you wish to migrate
+#
+# running it without a NOPASSWD sudoers user
+# ansible-playbook satellite_5_to_6_migration.yml -i inventoryfile --ask-pass -vv -b -K
+#
+# If you are running it without overrides (make sure you have ssh keys and sudoers configured with NOPASSWD)
+# ansible-playbook satellite_5_to_6_migration.yml -i inventoryfile -vv
+#
+# If the playbook fails and you want to rerun just the satellite part or the puppet part then use tags, 4 ex:
+# ansible-playbook satellite_5_to_6_migration.yml -i inventoryfile --tags=satellite -vv
+#
+# If you have some other way to discern what app/db is installed then replace the "extract installed add-on from file"
+# with another function get_url from a web server or cmdb query for example.
+
+- hosts: all
+  become: yes
+  become_method: sudo
+  gather_facts: true
+
+ vars:
+    additional_repos:
+      - rhel-{{ ansible_distribution_major_version}}-server-supplementary-rpms
+      - rhel-{{ ansible_distribution_major_version}}-server-rh-common-rpms
+      - rhel-{{ ansible_distribution_major_version}}-server-optional-rpms
+      - rhel-{{ ansible_distribution_major_version}}-server-extras-rpms
+
+  pre_tasks:
+    - name: collect only facts about hardware
+      setup:
+        gather_subset:
+          - 'hardware'
+    - name: get file system facts
+      setup: filter=ansible_mounts
+
+  tasks:
+    - name: Satellite block
+      block:
+        - name: Ensure > 5% free space on /var and /home
+          assert:
+            that:
+              - item.size_available > item.size_total|float * 0.05
+            msg: ‘Not enough space on {{ item.mount }}’’
+          when: item.mount == "/var" or item.mount == "/home"
+          with_items: "{{ ansible_mounts }}"
+
+        - name: Check to which satellite this host is registered
+          shell: >-
+            subscription-manager identity|grep RHN|wc -l
+          register: satelliteidentitycheck
+
+        - name: Verify that this host is registered with Satellite 5
+          assert:
+            that:
+              - satelliteidentitycheck.stdout|int == 1
+            msg: 'This server not registered with RHN Satellite 5!Satellite block aborted'
+
+        - name: extract installed add-on from file
+          shell: >-
+            /bin/awk -F= '/ADDON/{while(sub(/[0-9]/,"")){}print tolower($2)}' \
+            /var/log/puppet_configgroups.txt
+          register: addon
+
+        - name: create custom OS fact, for example RedHat6, RedHat7
+          set_fact:
+            myOSvers: >-
+              "{{ ansible_distribution }}
+              {{ ansible_distribution_major_version}}|lower"
+
+        - name: Get hosts Satellite 5 subscribed channels
+          yum:
+            update_cache: true
+            list: repos
+          register: subscribedsat5channels
+
+        - debug:
+            msg: "System {{ inventory_hostname }} has add-on {{ addon }}"
+            verbosity: 2
+          when: addon.stdout is defined
+
+        - debug:
+            var: subscribedsat5channels
+            verbosity: 2
+          when: subscribedsat5channels is defined
+
+        - name: download bootstrap script
+          get_url:
+            url: https://sat6.example.com/pub/bootstrap.py
+            dest: /tmp/bootstrap.py
+            mode: '0700'
+            validate_certs: no
+
+        - name: run bootstrap script, RHEL OS, no addon
+          shell: >-
+            /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove \
+             -s sat6.example.com --fqdn {{ ansible_fqdn }} \
+             -o MYORG -L got -g {{ myOSvers }}_6m/site_customer \
+              -a ak-auto,ak-{{ myOSvers }}_6m \
+              --skip puppet --skip katello-host-tools
+          when: addon.stdout is not defined or addon.stdout|length == 0
+
+        - name: run bootstrap script, RHEL OS, addon hostgroup, no activationkey
+          shell: >-
+            /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove \
+             -s sat6.example.com --fqdn {{ ansible_fqdn }} \
+             -o MYORG -L got -g {{ myOSvers }}_6m/site_customer/{{ addon.stdout }} \
+             -a ak-auto,ak-{{ myOSvers }}_6m \
+             --skip puppet --skip katello-host-tools
+          when:
+            - addon.stdout is defined
+            - addon.stdout is search("app1") or
+              addon.stdout is search("db1") or
+              addon.stdout is search("app2") or
+              addon.stdout is search("app3")
+
+        - name: run bootstrap script, RHEL OS, addon hostgroup + activationkey
+          shell: >-
+           /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove \
+           -s sat6.example.com --fqdn {{ ansible_fqdn }} \
+           -o MYORG -L got -g {{ myOSvers }}_6m/site_customer/{{ addon.stdout }} \
+           -a ak-auto,ak-{{ myOSvers }}_6m,ak-{{ myOSvers }}_6m_{{ addon.stdout }} \
+           --skip puppet --skip katello-host-tools
+          when:
+            - addon.stdout is defined
+            - addon.stdout is search("app4") or
+              addon.stdout is search("app5") or
+              addon.stdout is search("db2") or
+              addon.stdout is search("app6") or
+              addon.stdout is search("app7") or
+              addon.stdout is search("app8")
+
+     - name: Enable additional rhel 7 channels
+          rhsm_repository:
+            name: "{{ item }}"
+            state: enabled
+          with_items: "{{ additional_repos }}"         
+          
+        - name: Get hosts Satellite 6 subscribed channels
+          yum:
+            update_cache: true
+            list: repos
+          register: subscribedsat6channels
+
+        - debug:
+            var: subscribedsat6channels
+            verbosity: 2
+          when: subscribedsat6channels is defined
+
+      rescue:
+        - name: remove katello cert if bootstrap failed
+          yum:
+            name: katello-ca-consumer-sat6.example.com-1.0-1.noarch
+            state: absent
+      tags: satellite
+
+    - name: Puppet block
+      block:
+         - name: get stat on puppet autosign file
+          stat:
+            path: /etc/puppet/csr_attributes.yaml
+          register: autosignfile
+
+        - name: assert that old puppet env is used
+          assert:
+            that: 
+            - autosignfile.stat.exists == False
+            msg:  ‘New Puppet env detected, aborting puppet block’
+            
+        - name: stop puppet service
+          service:
+            name: puppet
+            state: stopped
+
+        - name: upgrade puppet package
+          yum:
+            name: puppet
+            state: latest
+
+         - name: remove puppet ssl directory
+          file:
+            path: /var/lib/puppet/ssl
+            state: absent
+
+        - name: create new puppet.conf, backup the old one
+          copy:
+            dest: /etc/puppet/puppet.conf
+            owner: root
+            group: root
+            mode: '0644'
+            backup: true
+            content: |
+                [main]
+                logdir = /var/log/puppet
+                rundir = /var/run/puppet
+                ssldir = $vardir/ssl
+                use_srv_records = true
+                srv_domain = _puppet3masters.example.com
+                syslogfacility = local6
+                [agent]
+                classfile = $vardir/classes.txt
+                localconfig = $confdir/localconfig
+                pluginsource = puppet:///plugins
+                pluginfactsource = puppet:///pluginfacts
+                splay = true
+
+        - name: create puppet autosign
+          copy:
+            dest: /etc/puppet/csr_attributes.yaml
+            owner: puppet
+            group: puppet
+            mode: '0600'
+            content: |
+              ---
+              custom_attributes:
+                1.2.840.113549.1.9.7: PleaseAllowMeToIntroduceMyself
+
+        - name: run puppet once with the new configuration
+          shell: >-
+            /bin/puppet agent -t --onetime --tags no_such_tag \
+             --waitforcert 30 --no-daemonize
+          register: puppetagentoutput
+          failed_when: puppetagentoutput.rc > 2
+
+        - name: Check for puppet agent_disabled file
+          stat:
+            path: "/var/lib/puppet/state/agent_disabled.lock"
+          register: lockfile
+
+        - name: start and enable the puppet service
+          service:
+            name: puppet
+            state: started
+            enabled: true
+          when: puppetagentoutput.rc <= 2 and lockfile.stat.exists == False
+      tags: puppet          

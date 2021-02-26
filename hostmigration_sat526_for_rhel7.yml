@@ -1,0 +1,280 @@
+---
+# This is for testing purpose only as of now!
+# in final version you need to change hosts to an inventory file
+# and use ssh connection instead
+# Version: beta
+# Last update 2021-01-14
+# By Henrik Lowenberg
+#
+# Script assumptions:
+ Only RHEL 6 servers are migrated
+# server is registered to Satellite 5
+#
+# puppet is configured to store a file in /var/log with host parameters
+# installed application/database are referred to as ADDON
+#
+# create a text file named inventoryfile
+# populate it with the batch you wish to migrate
+# if you are running this as your own id from a central server, execute it with:
+# ansible-playbook hostmigration_sat526_for_rhel7.yml -i inventoryfile -vv --ask-pass -b -K
+#
+# If you are adding ansible_user: userid into the playbook and has ssh keys and a NOPASSWD sudo rule
+# ansible-playbook hostmigration_sat526_for_rhel7.yml -i inventoryfile -vv
+#
+# If the playbook fails and you want to rerun just the satellite part or the puppet part then use tags, 4 ex:
+# ansible-playbook hostmigration_sat526_for_rhel7.yml -i inventoryfile --tags=satellite -vv
+# ansible-playbook hostmigration_sat526_for_rhel7.yml -i inventoryfile --tags=puppet -vv
+#
+- hosts: all
+  become: yes
+  become_method: sudo
+  gather_facts: true
+ 
+  vars:
+    additional_repos:
+      - rhel-7-server-supplementary-rpms
+      - rhel-7-server-rh-common-rpms
+      - rhel-7-server-optional-rpms
+      - rhel-7-server-extras-rpms
+ 
+  pre_tasks:
+    - name: collect only facts about hardware
+      setup:
+        gather_subset:
+          - 'hardware'
+ 
+    - name: get file system facts
+      setup: filter=ansible_mounts
+ 
+  tasks:
+    - name: Satellite block
+      block:
+        - name: Assert that host is RedHat 7
+          assert:
+            that:
+              - ansible_distribution == "RedHat"
+              - ansible_distribution_major_version|int == 7
+            fail_msg: "RedHat 7 NOT found, you should terminate this run..."
+            success_msg: "RedHat 7 found, execution proceeding..."
+ 
+        - name: Ensure > 5% free space on /var and /home
+          assert:
+            that:
+              - item.size_available > item.size_total|float * 0.05
+            msg: ‘Not enough space on {{ item.mount }}’
+          when: item.mount == "/var" or item.mount == "/home"
+          with_items: "{{ ansible_mounts }}"
+
+        - name: Check to which satellite this host is registered
+          shell: >-
+            subscription-manager identity|grep RHN|wc -l
+          register: satelliteidentitycheck
+
+        - name: Verify that this host is registered with Satellite 5
+          assert:
+            that:
+              - satelliteidentitycheck.stdout|int == 1
+            msg: 'This server not registered with RHN Satellite 5! Satellite block aborted!'
+
+        - name: extract installed add-on from file
+          shell: >-
+            grep -i ADDON /var/log/puppet_configgroups.txt|cut -f2 -d"="|rev|cut -c3-|rev|tr '[:upper:]' '[:lower:]'
+          register: addon
+          ignore_errors: true
+ 
+        - name: extract customer from file
+          shell: >-
+            grep -i CUSTOMER /var/log/puppet_configgroups.txt|cut -f2 -d"="|tr '[:upper:]' '[:lower:]'
+          register: customer
+          ignore_errors: true
+ 
+        - name: Get hosts Satellite 5 subscribed channels
+          yum:
+            update_cache: true
+            list: repos
+          register: subscribedsat5channels
+ 
+        - debug:
+            msg: "System {{ inventory_hostname }} has add-on {{ addon }}"
+            verbosity: 2
+          when: addon.stdout is defined
+
+        - debug:
+            msg: "System {{ inventory_hostname }} has customer {{ customer }}"
+            verbosity: 2
+          when: customer.stdout is defined
+ 
+        - debug:
+            var: subscribedsat5channels
+            verbosity: 2
+          when: subscribedsat5channels is defined
+ 
+        - name: download bootstrap script
+          get_url:
+            url: https://segotl4385.srv.volvo.com/pub/bootstrap.py
+            dest: /tmp/
+            mode: '0700'
+            validate_certs: no
+
+        - name: run bootstrap script, RHEL OS, no addon
+          shell: >-
+            /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove \
+             -s segotl3687.srv.volvo.com --fqdn {{ facter_fqdn }} \
+             -o HCL -L got -g rhel7_6m_gss/got_{{ customer.stdout }} \
+              -a ak-auto,ak-rhel7_6m_gss \
+              --skip puppet --skip katello-host-tools
+          when: addon.stdout is not defined or addon.stdout|length == 0
+ 
+        - name: run bootstrap script, RHEL OS, addon hostgroup, no activationkey
+          shell: >-
+            /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove \
+             -s segotl3687.srv.volvo.com --fqdn {{ facter_fqdn }} \
+             -o HCL -L got -g rhel7_6m_gss/got_{{ customer.stdout }}/{{ addon.stdout }} \
+             -a ak-auto,ak-rhel7_6m_gss \
+             --skip puppet --skip katello-host-tools
+          when:
+            - addon.stdout is defined
+            - addon.stdout is search("cassandra") or
+              addon.stdout is search("oracle") or
+              addon.stdout is search("tsmserv") or
+              addon.stdout is search("was") or
+              addon.stdout is search("vgcs") or
+              addon.stdout is search("vgcsoracle") or
+              addon.stdout is search("vgcspostgres") or
+              addon.stdout is search("vgt") or
+              addon.stdout is search("vgtoracle") or
+              addon.stdout is search("vgtpostgres")
+ 
+        - name: run bootstrap script, RHEL OS, addon hostgroup + activationkey
+          shell: >-
+            /tmp/bootstrap.py -l satellitehostmove -p satellitehostmove \
+             -s segotl3687.srv.volvo.com --fqdn {{ facter_fqdn }} \
+             -o HCL -L got -g rhel7_6m_gss/got_{{ customer.stdout }}/{{ addon.stdout }} \
+             -a ak-auto,ak-rhel7_6m_gss,ak-rhel7_6m_gss_{{ addon.stdout }} \
+             --skip puppet --skip katello-host-tools
+          when:
+            - addon.stdout is defined
+            - addon.stdout is search("postgres") or
+              addon.stdout is search("sapapp") or
+              addon.stdout is search("sapdb2") or
+              addon.stdout is search("jboss") or
+              addon.stdout is search("jbosszip") or
+              addon.stdout is search("wlp")
+ 
+        - name: Enable additional rhel 7 channels
+          rhsm_repository:
+            name: "{{ item }}"
+            state: enabled
+          with_items: "{{ additional_repos }}"
+ 
+        - name: Get hosts Satellite 6 subscribed channels
+          yum:
+            update_cache: true
+            list: repos
+          register: subscribedsat6channels
+
+         - debug:
+            var: subscribedsat6channels
+            verbosity: 2
+          when: subscribedsat6channels is defined
+ 
+      rescue:
+        - name: remove katello cert if bootstrap failed
+          yum:
+            name: katello-ca-consumer-segotl3687.srv.volvo.com-1.0-1.noarch
+            state: absent
+      tags: satellite
+ 
+    - name: Puppet block
+      block:
+        - name: Check for presence of running cfengine processes
+          shell: >-
+            /sbin/service cfengine3 status|grep -i running|wc -l
+          args:
+            warn: false # don't tell me to use service module
+          register: cfenginestatus
+ 
+        - name: Assert that cfengine is not used, if cfengine is used then abort
+          assert:
+            that:
+              - cfenginestatus.stdout|int == 0
+            msg:  ‘cfengine detected, aborting puppet block’
+ 
+        - name: get stat on puppet autosign file
+          stat:
+            path: /etc/puppet/csr_attributes.yaml
+          register: autosignfile
+ 
+        - name: assert that old puppet env is used
+          assert:
+            that:
+            - autosignfile.stat.exists == False
+            msg:  ‘New Puppet env detected, aborting puppet block’
+ 
+        - name: stop puppet service
+          service:
+            name: puppet
+            state: stopped
+ 
+        - name: upgrade puppet package
+          yum:
+            name: puppet
+            state: latest
+ 
+        - name: remove puppet ssl directory
+          file:
+            path: /var/lib/puppet/ssl
+            state: absent
+ 
+        - name: create new puppet.conf, backup the old one
+          copy:
+            dest: /etc/puppet/puppet.conf
+            owner: root
+            group: root
+            mode: '0644'
+           backup: true
+            content: |
+                [main]
+                logdir = /var/log/puppet
+                rundir = /var/run/puppet
+                ssldir = $vardir/ssl
+                use_srv_records = true
+                srv_domain = _puppet3masters.srv.volvo.com
+                syslogfacility = local6
+                [agent]
+                classfile = $vardir/classes.txt
+                localconfig = $confdir/localconfig
+                pluginsource = puppet:///plugins
+                pluginfactsource = puppet:///pluginfacts
+                splay = true
+ 
+        - name: create puppet autosign
+          copy:
+            dest: /etc/puppet/csr_attributes.yaml
+            owner: puppet
+            group: puppet
+            mode: '0600'
+            content: |
+              ---
+              custom_attributes:
+                1.2.840.113549.1.9.7: PleaseAllowMeToIntroduceMyself
+ 
+        - name: run puppet once with the new configuration
+          shell: >-
+            /bin/puppet agent -t --onetime --tags no_such_tag \
+             --waitforcert 30 --no-daemonize
+          register: puppetagentoutput
+          failed_when: puppetagentoutput.rc > 2
+
+        - name: Check for puppet agent_disabled file
+          stat:
+            path: "/var/lib/puppet/state/agent_disabled.lock"
+          register: lockfile
+ 
+        - name: start and enable the puppet service
+          service:
+            name: puppet
+            state: started
+            enabled: true
+          when: puppetagentoutput.rc <= 2 and lockfile.stat.exists == False
+      tags: puppet
